@@ -112,13 +112,14 @@ public class ConcurrencyExample {
      * 每个线程处理2个分区，实现并行消费
      */
 }
-
+```
 1.2 重平衡
 发生在实例重启啊 扩容的场景
 一般不需要处理，等待业务执行完成就可以
 
 
 ###  2.1 大型互联网kafka如何实现消息同步的
+```java
 /**
  * 使用 MirrorMaker 2.0 进行集群间数据同步
  */
@@ -271,3 +272,4 @@ public class KafkaTemplateManager {
         return template;
     }
 }
+```
