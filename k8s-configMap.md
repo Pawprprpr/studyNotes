@@ -1,6 +1,10 @@
 📌 一句话记住
 ConfigMap = K8s的配置文件中心，把配置和镜像分开。
 
+
+# 命令速查链接
+https://chat.deepseek.com/share/a858yzq0gkd077c0po
+
 🔧 创建ConfigMap（3种方式，记前2种）
 bash
 # 1. 从键值对（简单配置）
