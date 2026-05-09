@@ -3,3 +3,5 @@ https://chat.deepseek.com/share/m62ez0nr95jxonryfy
 
 redisson 释放锁没有锁的时候会抛异常
 https://chat.deepseek.com/share/0ldlxj4lq94kyk9ff0
+redisson面试题
+https://chat.deepseek.com/share/mkr2d0jmuay93esa0m
