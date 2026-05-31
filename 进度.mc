@@ -38,3 +38,4 @@ RAG（检索增强生成）
 ├── ReRanker（重排序，二次筛选）
 ├── 混合检索（向量+关键词BM25）
 └── LLM基础理论（Transformer/Attention）
+阶段一 LLM与python基础总结：https://chat.deepseek.com/a/chat/s/356665bb-70b8-4d9f-b075-1fac24c556f1
