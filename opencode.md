@@ -113,35 +113,63 @@
 - *我的笔记：*
 
 > **📚 OpenCode 实战笔记**
-> 
-> 这个项目的 ReAct 实现特点：
-> - **AI SDK 控制循环**：不是自己控制循环，而是把循环交给 Vercel AI SDK
-> - **单次调用多次工具**：LLM 在一次 `streamText()` 调用里可以调用多次工具
-> - **事件驱动架构**：LLM 输出 → 事件流 → `handleEvent()` 处理
-> 
-> 核心流程：
+>
+> **调用链路**：
 > ```
-> prompt.ts:createUserMessage() → 创建用户消息
->     ↓
-> runLoop() → while 循环处理
->     ↓
-> resolveTools() → 准备工具列表给 LLM
->     ↓
-> llm.stream() → 调用 AI SDK 的 streamText
->     ↓
-> LLM 输出 tool_call
->     ↓
-> AI SDK 自动执行工具，把结果塞回去
->     ↓
-> LLM 继续输出，直到 finish
+> 用户发消息 → prompt() → runLoop() → while true 循环
+>                                         ↓
+>                              handle.process() → llm.stream() → AI SDK
 > ```
-> 
+>
+> **关键关系**：
+> - 每次用户发消息 → 调用一次 `prompt()` → 创建新的 `runLoop()`
+> - `while true` 控制"一次消息里需要处理多少轮工具调用"
+> - 每次 `handle.process()` = 一次完整 LLM 请求
+>
+> **handle.process() 返回三种可能**（`processor.ts:545-550`）：
+> - `"continue"` = LLM 调用结束了，但还没"说完"，继续下一轮 while true
+> - `"stop"` = LLM 说完了，退出 while true
+> - `"compact"` = 上下文太长了，需要压缩后继续
+>
+> **runLoop 判断逻辑**（`prompt.ts:1574-1603`）：
+> ```typescript
+> const result = yield* handle.process({...})
+>
+> // 1. structured 输出 → break
+> if (structured !== undefined) return "break"
+>
+> // 2. finished 且没错误 → break
+> const finished = handle.message.finish && !["tool-calls", "unknown"].includes(handle.message.finish)
+> if (finished && !handle.message.error) return "break"
+>
+> // 3. result === "stop" → break
+> if (result === "stop") return "break"
+>
+> // 4. result === "compact" → compact 然后 continue
+> if (result === "compact") {
+>   yield* compaction.create({...})
+>   return "continue"
+> }
+>
+> // 5. 其他 → continue
+> return "continue"
+> ```
+>
+> **重要**：`finish = "tool-calls"` 不算 finished，会继续循环
+>
+> **AI SDK 自动处理工具调用**：
+> - `llm.stream()` 内部收到 `tool-call` 事件
+> - AI SDK 自动执行工具，把结果塞回去
+> - 等 `streamText()` 返回时，所有 tool-call 已经执行完毕
+> - 一个 `while true` 循环里，可能有多次 tool-call，但只有一次 `llm.stream()`
+>
 > **关键代码位置**：
 > - `session/prompt.ts:1356` - `prompt()` 方法入口
 > - `session/prompt.ts:1388` - `runLoop()` 循环
-> - `session/prompt.ts:441` - `resolveTools()` 准备工具
-> - `session/processor.ts:501` - `handle.process()` 发起 LLM 调用
-> - `session/processor.ts:129` - `handleEvent()` 处理事件
+> - `session/prompt.ts:1561` - 调用 `handle.process()`
+> - `session/prompt.ts:1593` - 判断 result 决定 break/continue
+> - `session/processor.ts:545-550` - handle.process 返回值逻辑
+> - `session/llm.ts:261` - `streamText()` 调用
 
 ### 2.2 记忆管理
 - 短期记忆（对话历史滑动窗口、Token 压缩）
