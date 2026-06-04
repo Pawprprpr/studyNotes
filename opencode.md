@@ -1,3 +1,306 @@
+# AI Agent 企业级实战知识骨架
+
+> 基于 Java 专家视角构建的系统性学习框架
+> 目标：能设计并实现类似于 OpenCode、Cursor 的企业级 AI 编程助手，并覆盖 CI 自动修复等场景
+
+---
+
+## 一、LLM 与推理基础
+
+### 1.1 Transformer 核心概念
+- 自注意力机制、多头注意力
+- 位置编码（绝对/相对）
+- 层归一化、残差连接
+- *我的笔记：*
+
+### 1.2 Token 与上下文窗口
+- Tokenization（BPE、SentencePiece）
+- 上下文长度、截断策略
+- Token 消耗计算与优化
+- *我的笔记：*
+
+### 1.3 Prompt Engineering
+- System / User / Assistant 角色
+- 少样本示例（Few-shot）
+- 思维链（Chain-of-Thought）、思维树（Tree-of-Thoughts）
+- 结构化输出约束（JSON、YAML、正则）
+- *我的笔记：*
+
+### 1.4 Function Calling（工具调用规范）
+- OpenAI 兼容的工具描述 JSON Schema
+- 工具选择与参数填充
+- 并行/串行调用策略
+- *我的笔记：*
+
+### 1.5 模型格式与量化
+- GGUF、GPTQ、AWQ、bitsandbytes
+- INT8 / INT4 推理性能与精度权衡
+- 量化对代码能力的影响
+- *我的笔记：*
+
+### 1.6 推理服务与部署
+- vLLM（PagedAttention、连续批处理）
+- Ollama、llama.cpp、TGI
+- 自托管 vs 云 API 的权衡
+- 服务化设计（负载均衡、弹性伸缩）
+- *我的笔记：*
+
+---
+
+## 二、Agent 架构与核心模式
+
+### 2.1 核心运行模式
+- ReAct（推理-行动循环）
+- Plan-Execute（先规划再执行）
+- Self-Reflection（反思与自我修正）
+- 终止条件判定（目标达成、超时、熔断）
+- *我的笔记：*
+
+### 2.2 记忆管理
+- 短期记忆（对话历史滑动窗口、Token 压缩）
+- 长期记忆（向量存储、经验总结）
+- 工作记忆（当前任务状态、中间结果）
+- 记忆更新与遗忘策略
+- *我的笔记：*
+
+### 2.3 状态管理与任务调度
+- 有限状态机设计（FSM）
+- 任务取消、暂停、恢复
+- 多任务并发与排队
+- *我的笔记：*
+
+### 2.4 多 Agent 协作（进阶）
+- 主从模式、委派与汇总
+- Agent 间通信协议
+- *我的笔记：*
+
+---
+
+## 三、上下文工程与代码智能
+
+### 3.1 代码解析与 AST
+- tree-sitter 多语言增量解析
+- JavaParser、TypeScript Compiler API
+- 自定义查询（Query DSL）
+- *我的笔记：*
+
+### 3.2 代码分块与嵌入
+- 分块策略（按函数、类、文件）
+- 语义相似的合并与上下文窗口适配
+- CodeBERT、StarCoder、UniXcoder 等嵌入模型
+- sentence-transformers 调用
+- *我的笔记：*
+
+### 3.3 向量数据库与检索增强（RAG）
+- Chroma / FAISS / Qdrant / Milvus
+- 近似最近邻（ANN）索引
+- 混合检索（向量 + BM25）
+- 重排序（Re-rank）
+- *我的笔记：*
+
+### 3.4 LSP 集成
+- LSP 协议核心（诊断、跳转定义、引用、符号）
+- 客户端实现（pygls、lsp-types）
+- 实时诊断与增量更新
+- *我的笔记：*
+
+### 3.5 增量索引与文件监听
+- watchdog / inotify
+- 索引更新策略（全量、增量、懒加载）
+- *我的笔记：*
+
+---
+
+## 四、工具层与 CLI 联动
+
+### 4.1 工具抽象与注册
+- 统一 Tool 接口（名称、描述、参数 Schema、执行函数）
+- 工具注册表与动态发现
+- *我的笔记：*
+
+### 4.2 命令行安全封装
+- 异步子进程管理（asyncio subprocess）
+- 超时、输出截断、环境隔离
+- 资源限制（cgroups、rlimit、Docker 容器）
+- 沙箱执行与权限控制
+- *我的笔记：*
+
+### 4.3 文件与代码修改
+- 差异应用（unidiff、git diff/patch）
+- 原子写入与备份
+- 行级精确定位编辑（Replace、Insert、Delete）
+- *我的笔记：*
+
+### 4.4 构建系统集成
+- Maven / Gradle / npm / Cargo 命令封装
+- 依赖树解析
+- 编译错误与测试报告解析
+- *我的笔记：*
+
+### 4.5 Git 操作
+- GitPython / 直接调用 Git CLI
+- 创建分支、提交、推送、rebase
+- 冲突检测与处理
+- *我的笔记：*
+
+---
+
+## 五、安全与企业可靠性
+
+### 5.1 深度防御体系
+- 输入校验 → 命令过滤 → 沙箱执行 → 行为审计 → 熔断机制
+- *我的笔记：*
+
+### 5.2 敏感信息检测与脱敏
+- 正则匹配 + NER（Microsoft Presidio）
+- 自动替换为占位符
+- 上下文进入 LLM 前的清洗管道
+- *我的笔记：*
+
+### 5.3 权限分级与风险管控
+- 修改范围/影响面风险评估
+- 自动/半自动/人工审批分级
+- 修改量熔断（最大文件数、行数、重试次数）
+- *我的笔记：*
+
+### 5.4 审计与可观测性
+- 结构化行为日志（不可篡改）
+- OpenTelemetry 分布式追踪
+- Prometheus 指标监控
+- Grafana 面板
+- *我的笔记：*
+
+### 5.5 提示注入防御
+- 输入角色边界加固
+- 用户数据与系统提示隔离
+- 动态检测恶意指令
+- *我的笔记：*
+
+---
+
+## 六、CI/CD 集成与 MR 自动化
+
+### 6.1 事件驱动与 Webhook
+- GitLab CI / GitHub Actions Webhook 解析
+- 从 artifacts 获取构建日志
+- 失败事件路由
+- *我的笔记：*
+
+### 6.2 修复流水线
+- 日志清洗 → 根因分析 → 修复方案生成 → 确认 → 应用修改 → 验证 → 创建 MR
+- 自动化程度分级（全自动/半自动）
+- *我的笔记：*
+
+### 6.3 MR 生命周期管理
+- 通过 API 创建 MR、更新描述、添加评论
+- 指派 Reviewer、打标签（如 `autofix`）
+- Conventional Commits 与 JIRA 编号提取
+- rebase 冲突自动处理策略
+- *我的笔记：*
+
+### 6.4 构建验证与回归
+- 隔离分支编译 + 单元测试
+- 代码风格检查（lint）
+- 受影响模块的测试回归
+- 性能对比（可选）
+- *我的笔记：*
+
+---
+
+## 七、前端与交互层（可选）
+
+### 7.1 IDE 插件架构
+- VS Code Extension API
+- Webview、内联建议、装饰器
+- *我的笔记：*
+
+### 7.2 Web 控制台
+- React + Monaco Editor / CodeMirror
+- Diff 可视化（双栏对比、行内高亮）
+- 流式输出显示（SSE / WebSocket）
+- *我的笔记：*
+
+---
+
+## 八、基础设施与工程化
+
+### 8.1 容器化与编排
+- Docker、Docker Compose
+- Kubernetes（生产环境）
+- 多服务编排（推理服务 + Agent + 数据库）
+- *我的笔记：*
+
+### 8.2 网络与负载均衡
+- Nginx / Traefik 反向代理
+- SSE 长连接超时与缓冲设置
+- 会话保持
+- *我的笔记：*
+
+### 8.3 配置与密钥管理
+- 环境变量分层
+- Vault / K8s Secrets
+- 配置热更新
+- *我的笔记：*
+
+### 8.4 日志、监控与告警
+- 结构化日志（JSON）
+- ELK / Loki + Grafana
+- 告警规则（连续失败、熔断触发）
+- *我的笔记：*
+
+---
+
+## 九、学习路线与项目里程碑
+
+### 9.1 里程碑 1：最小闭环 Agent
+- 实现异步 Shell 工具安全调用
+- 跑通 ReAct 循环
+- *我的笔记：*
+
+### 9.2 里程碑 2：CI 失败根因分析
+- 解析真实 Java 项目构建日志
+- 输出结构化根因报告
+- *我的笔记：*
+
+### 9.3 里程碑 3：自动修复与 MR
+- 生成修复补丁 → 应用 → 编译验证
+- 创建合规 MR
+- *我的笔记：*
+
+### 9.4 里程碑 4：安全加固与生产化
+- 敏感信息脱敏、权限分级、审计日志
+- 多场景测试与性能优化
+- *我的笔记：*
+
+---
+
+## 十、Java 专家学习对照表
+
+| AI Agent 概念 | Java 中可类比的技术/模式 | 相似点 | 关键差异 |
+|--------------|------------------------|--------|----------|
+| ReAct 循环 | 工作流引擎状态机 (Camunda) | 步骤流转 | LLM 决策不确定，需结构化输出 |
+| 工具调用 (Tool) | SPI 接口 + 策略模式 | 动态绑定 | 工具需自然语言描述 |
+| 记忆管理 | Redis + 数据库持久层 | 数据存取 | 语义检索、Token 压缩 |
+| 上下文引擎 (RAG) | 搜索引擎 + 数据管道 | 数据预处理 | 嵌入模型精度、切片策略 |
+| 安全护栏 | Spring Security 过滤器链 | 拦截与审批 | 输入/输出两端防御，提示注入 |
+| 熔断器 | Hystrix / Resilience4j | 失败保护 | 模型输出不可信导致的逻辑熔断 |
+
+*我的补充与理解：*
+
+---
+
+## 十一、常用工具与资源速查
+
+- 模型：CodeQwen、DeepSeek-Coder、Starcoder2
+- 推理：Ollama、vLLM、llama.cpp
+- 向量库：Chroma、FAISS、Qdrant
+- 嵌入模型：BGE、CodeBERT、text-embedding-3-small
+- LSP：pygls、bash-language-server、typescript-language-server
+- 安全：Presidio、Bandit
+- 框架参考：Open Interpreter、Aider、Continue、LangChain（源码阅读清单）
+- *我的收藏：*
+
+
 react流程 
 你输入 → createUserMessage() → 创建消息
     ↓
