@@ -1,3 +1,4 @@
+react流程 
 你输入 → createUserMessage() → 创建消息
     ↓
 runLoop() → while 循环
