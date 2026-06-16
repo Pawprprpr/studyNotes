@@ -204,6 +204,133 @@
 - Agent 间通信协议
 - *我的笔记：*
 
+### 2.5 Provider / Model（LLM 接入层）（✨新增）
+
+> **📚 OpenCode 实战笔记**
+>
+> **整体定位**：Provider 是 Agent 和 LLM 之间的桥梁。Agent 说"我要用 claude-sonnet-4"，Provider 负责：找到模型 → 创建 SDK 客户端 → 返回 AI SDK 能用的 LanguageModelV3 对象。
+>
+> **Java 类比**：DataSource 接口，背后可以是 MySQL/PostgreSQL/Oracle。
+>
+> **三层类型体系**：
+> ```
+> ProviderID (品牌标识) → Info (Provider 全量配置) → Model (一个具体模型)
+> ```
+>
+> | 类型 | 含义 | Java 类比 |
+> |------|------|-----------|
+> | `ProviderID` | Effect Schema Brand 品牌字符串（anthropic、openai...） | 枚举 |
+> | `Info` | Provider 全量信息：名称、Key、env、模型列表 | DataSource 配置 Bean |
+> | `Model` | 模型元数据：能力、费用、上下文、变体 | Connection 配置 |
+>
+> **ProviderID 和 ModelID 用 Brand Type**（`provider/schema.ts`）：
+> - 编译时类型安全，运行时就是字符串
+> - 不能把 ProviderID 传给需要 ModelID 的函数
+> - Java 类比：类似自定义类型 `ProviderID extends String`，但 Java 做不到编译时强类型
+>
+> **初始化 6 步流程**（`provider/provider.ts:1014-1339`）：
+> ```
+> 1. ModelsDev.get()         → 加载模型数据库（所有已知 Provider+Model 元数据）
+> 2. config 合并             → opencode.json 中的用户自定义 Provider
+> 3. env 检测                → 环境变量中的 API Key（ANTHROPIC_API_KEY 等）
+> 4. auth 读取               → 存储中的 OAuth/API Key
+> 5. custom() 后处理          → 每个 Provider 的定制化逻辑
+> 6. filter                  → 过滤 disabled/alpha/deprecated
+> ```
+>
+> **优先级链**：database → config → env → auth → custom → filter，后者覆盖前者。
+> **Java 类比**：Spring PropertySource 优先级链。
+>
+> **custom() 函数——Provider 后处理器**（`provider/provider.ts:175-820`）：
+>
+> 每个 Provider 可定义特殊行为，返回：
+> ```typescript
+> {
+>   autoload: boolean,           // 无 Key 时是否还显示
+>   getModel?: CustomModelLoader, // 自定义模型创建逻辑
+>   vars?: CustomVarsLoader,     // URL 变量替换（${GOOGLE_VERTEX_PROJECT}）
+>   options?: Record<string, any>, // 传给 SDK 的额外选项
+>   discoverModels?: CustomDiscoverModels  // 动态发现模型
+> }
+> ```
+>
+> 典型例子：
+> - **anthropic**：添加 `anthropic-beta` 请求头（扩展思考、工具流式）
+> - **openai**：用 `sdk.responses()` 而非 `sdk.languageModel()`（OpenAI Responses API）
+> - **amazon-bedrock**：根据 region 自动加前缀（`us.claude-sonnet-4`），处理 AWS 凭证链
+> - **gitlab**：运行时动态发现工作流模型（`discoverModels`）
+> - **azure**：根据配置选择 `sdk.responses()` 或 `sdk.chat()`
+>
+> **Java 类比**：BeanPostProcessor，每个供应商有自己的后处理器。
+>
+> **getLanguage() 核心调用路径**（`provider/provider.ts:1503-1544`）：
+> ```
+> Agent 要用模型 → Provider.getLanguage(model)
+>   → resolveSDK(model) 创建 SDK 客户端
+>     → BUNDLED_PROVIDERS[api.npm] 内置？或 Npm.add() 动态安装？
+>   → modelLoaders[providerID] 存在？用自定义 getModel()
+>     → 否则用 sdk.languageModel(model.api.id)
+>   → 缓存到 Map<string, LanguageModelV3>
+> ```
+>
+> **resolveSDK 关键逻辑**（`provider/provider.ts:1344-1479`）：
+> 1. 合并 options（baseURL、apiKey、headers）
+> 2. URL 中的 `${VAR}` 变量替换（varsLoaders + 环境变量）
+> 3. Hash 缓存 key（同 providerID + npm + options 复用 SDK 实例）
+> 4. 包装自定义 fetch：超时控制、SSE 超时检测（`wrapSSE`）
+> 5. 优先 BUNDLED_PROVIDERS（编译时打包的 20+ SDK），否则动态 `npm install + import`
+>
+> **BUNDLED_PROVIDERS**（`provider/provider.ts:129-153`）：
+> ```typescript
+> BUNDLED_PROVIDERS = {
+>   "@ai-sdk/anthropic": createAnthropic,
+>   "@ai-sdk/openai": createOpenAI,
+>   "@ai-sdk/amazon-bedrock": createAmazonBedrock,
+>   // ... 20+ 个
+> }
+> ```
+> 如果模型的 `api.npm` 不在此表中，resolveSDK 会动态 `npm install` + `import`。
+>
+> **ProviderTransform——消息适配层**（`provider/transform.ts`）：
+>
+> 处理不同 LLM 的"怪癖"（Dialect 模式）：
+>
+> | 函数 | 作用 |
+> |------|------|
+> | `normalizeMessages()` | Anthropic 不接受空 content；Claude toolCallId 只能含字母数字下划线；Mistral toolId 限9字符且 tool 后不能紧跟 user |
+> | `applyCaching()` | 对 system 和最后2条消息加缓存标记（Anthropic/OpenRouter/Bedrock 各有不同字段名） |
+> | `unsupportedParts()` | 模型不支持图片/PDF 时，把附件转成文本提示 |
+> | `variants()` | 推理模型的思考级别配置（high/max/low），每个 Provider 参数格式不同 |
+> | `temperature()` | 不同模型默认温度（qwen: 0.55, gemini: 1.0, claude: undefined） |
+> | `options()` | 每个 Provider 特殊请求选项（openai: store=false, openrouter: usage.include=true） |
+> | `schema()` | Gemini 不接受 integer 枚举，转成 string |
+> | `providerOptions()` | 把选项映射到正确的 SDK 命名空间（azure 需同时设 openai 和 azure） |
+>
+> **Java 类比**：DatabaseDialect，不同数据库的 SQL 方言翻译层。
+>
+> **ProviderAuth——认证流程**（`provider/auth.ts`）：
+> - **API Key**：直接存 key，由 custom() 或 env 填入
+> - **OAuth**：`authorize()` → 浏览器授权 → `callback()` 拿到 access_token/refresh_token
+> - OAuth 通过 Plugin 的 `auth` 钩子扩展（如 GitLab 的 OAuth 流程）
+>
+> **关键代码位置**：
+> - `provider/schema.ts:6` - ProviderID Brand Type 定义
+> - `provider/schema.ts:29` - ModelID Brand Type 定义
+> - `provider/provider.ts:129-153` - BUNDLED_PROVIDERS 映射表
+> - `provider/provider.ts:175-820` - custom() Provider 后处理器
+> - `provider/provider.ts:822-891` - Model 类型定义
+> - `provider/provider.ts:893-906` - Info 类型定义
+> - `provider/provider.ts:1014-1339` - 初始化 6 步流程
+> - `provider/provider.ts:1344-1479` - resolveSDK
+> - `provider/provider.ts:1503-1544` - getLanguage
+> - `provider/provider.ts:1614-1643` - defaultModel
+> - `provider/transform.ts:278` - message 消息适配
+> - `provider/transform.ts:364` - variants 思考级别
+> - `provider/transform.ts:746` - options Provider 选项
+> - `provider/transform.ts:907` - providerOptions 命名空间映射
+> - `provider/auth.ts:165` - authorize
+> - `provider/auth.ts:192` - callback
+
 ---
 
 ## 三、上下文工程与代码智能
@@ -870,13 +997,369 @@ evaluate() 匹配规则：
 - 默认 action 是 "ask"
 ```
 
+### 11.6.2 Bus 与 Deferred 机制（✨新增）
+
+**Bus（事件总线）**：
+- 发布-订阅模式，用于后端和前端通信
+- `Bus.publish(Event.Asked, info)` → 前端订阅后弹窗
+- `Bus.subscribe(Permission.Event.Asked, callback)` → 前端监听事件
+- `GlobalBus.emit()` → 跨实例广播（用于 TUI 或前端跨标签页）
+
+**Deferred（延迟结果）**：
+- 类似 Java 的 `CompletableFuture`，用于 Effect 框架
+- `Deferred.make()` → 创建
+- `Deferred.await(deferred)` → 阻塞等待
+- `Deferred.succeed(deferred, value)` → 成功唤醒
+- `Deferred.fail(deferred, error)` → 失败唤醒
+
+**完整串起来**：
+```
+用户执行 cat D:/study/README.md
+    │
+    ▼
+BashTool.execute()
+    │
+    ▼
+ctx.ask({ permission: "external_directory", patterns: ["D:/study/*"] })
+    │
+    ▼
+permission.ask()
+    │
+    ├─ evaluate() → 匹配到 "ask"
+    │
+    ├─ Deferred.make() → 创建 deferred
+    │
+    ├─ pending.set(id, { deferred }) → 存入 Map
+    │
+    ├─ Bus.publish(Event.Asked, info) → 发布事件
+    │      │
+    │      ▼
+    │   前端收到事件 → 弹窗
+    │      │
+    │   用户点击"Allow Once"
+    │      │
+    │   Permission.reply({ reply: "once" })
+    │      │
+    ├─ Deferred.await(deferred) ← 阻塞等待...
+    │      │
+    │      ◄──────────────────────
+    │      │ (用户点击后唤醒)
+    │
+    └─ 继续执行命令
+```
+
+**关键代码**：
+- `bus/index.ts:83-98` - Bus.publish 实现
+- `bus/index.ts:149-156` - Bus.subscribeCallback 实现
+- `permission/index.ts:194` - Deferred.make 创建
+- `permission/index.ts:198` - Deferred.await 阻塞
+- `permission/index.ts:236` - Deferred.succeed 唤醒
+- `permission/index.ts:218` - Deferred.fail 唤醒（拒绝）
+
+### 11.6.3 流式输出与前端交互（✨新增）
+
+**问题**：后端的事件怎么传到前端 UI 的？
+
+**架构图**：
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              后端 OpenCode                                   │
+│                                                                             │
+│  AI SDK fullStream 事件 ──► handleEvent() ──► Bus.publish() ──► SSE /event  │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  事件类型：text-delta、tool-input-start、tool-input-delta、tool-call、│    │
+│  │          tool-result、finish 等                                       │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                     │
+                                     ▼ (SSE: text/event-stream)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              前端 (你当前用的 GUI)                            │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  global-sdk.tsx:139-154                                              │    │
+│  │  const events = await eventSdk.global.event({...})                  │    │
+│  │  for await (const event of events.stream) {                         │    │
+│  │    emitter.emit(event.directory, event.payload)  // 发射给 UI        │    │
+│  │  }                                                                   │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  event-reducer.ts 根据事件类型更新 UI 状态：                                  │
+│  ├── permission.asked ──► 显示权限弹窗                                      │
+│  ├── message.part.updated ──► 显示 AI 回复内容                              │
+│  └── tool-result ──► 显示工具执行结果                                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**AI SDK fullStream 事件类型**：
+
+| 事件类型 | 什么时候触发 | 携带什么数据 |
+|---------|------------|-------------|
+| `start` | 开始生成 | 无 |
+| `text-delta` | 输出文本增量 | `text: "你"` |
+| `reasoning-start/delta/end` | AI 思考过程 | `id`, `text` |
+| `tool-input-start` | 工具参数开始 | `id`, `toolName` |
+| `tool-input-delta` | 工具参数增量 | `id`, `delta: "cat D:/s"` |
+| `tool-input-end` | 工具参数结束 | `id` |
+| `tool-call` | 触发工具调用 | `toolCallId`, `toolName`, `input` |
+| `tool-result` | 工具执行完成 | `toolCallId`, `output` |
+| `tool-error` | 工具执行失败 | `toolCallId`, `error` |
+| `finish` | 全部完成 | 无 |
+
+**示例：用户说 "帮我读取 D:/study/README.md"**
+
+```json
+{"type": "start"}
+{"type": "text-delta", "text": "好的"}
+{"type": "text-delta", "text": "，我来帮你读取这个文件"}
+{"type": "tool-input-start", "id": "tool_001", "toolName": "read"}
+{"type": "tool-input-delta", "id": "tool_001", "delta": "{"}
+{"type": "tool-input-delta", "id": "tool_001", "delta": '"filePath":'}
+{"type": "tool-input-delta", "id": "tool_001", "delta": " "}
+{"type": "tool-input-delta", "id": "tool_001", "delta": '"D:/study/README.md"'}
+{"type": "tool-input-delta", "id": "tool_001", "delta": "}"}
+{"type": "tool-input-end", "id": "tool_001"}
+{"type": "tool-call", "toolCallId": "tool_001", "toolName": "read", "input": {"filePath": "D:/study/README.md"}}
+{"type": "tool-result", "toolCallId": "tool_001", "output": {"output": "<path>D:/study/README.md</path>\n<type>file</type>\n<content>\n1: # 学习笔记\n2: ...\n</content>", "title": "README.md"}}
+{"type": "text-delta", "text": "\n文件已读取成功"}
+{"type": "finish"}
+```
+
+**tool-input-delta 的意义**：
+- LLM 一个字一个字生成，工具参数也是慢慢拼接的
+- `tool-input-delta` 把拼接过程实时告诉前端，用户可以看到 AI 正在输入什么命令
+
+**项目结构**：
+```
+packages/
+├── opencode/          # 后端 Agent（你学的主要内容）
+│   ├── session/
+│   │   ├── processor.ts    # handleEvent 处理事件
+│   │   └── llm.ts          # AI SDK streamText()
+│   ├── bus/               # 事件总线
+│   ├── permission/        # 权限系统
+│   └── server/routes/
+│       └── event.ts       # SSE /event 端点
+│
+├── app/               # Web 前端（packages/app 是 web 版本）
+│   └── src/
+│       ├── context/
+│       │   ├── global-sdk.tsx     # 连接 /event，接收事件
+│       │   └── global-sync/
+│       │       └── event-reducer.ts  # 根据事件更新 UI
+│       └── pages/
+│
+└── desktop/           # Desktop 前端（Tauri/Electron）
+    └── src-tauri/     # Rust 后端
+```
+
+**关键代码**：
+- `session/processor.ts:129` - handleEvent 处理每个事件
+- `session/processor.ts:171-184` - tool-input-start 处理
+- `session/processor.ts:186-191` - tool-input-delta 处理
+- `session/processor.ts:240-259` - tool-result 处理
+- `server/routes/event.ts:92` - Bus.subscribeAll() 发布 SSE
+- `global-sdk.tsx:139-154` - 前端连接 SSE 接收事件
+
+### 11.6.4 MessageV2 数据结构（✨新增）
+
+**用户消息 User**：
+```typescript
+MessageV2.User {
+  id, sessionID,
+  role: "user",
+  time: { created },
+  tools: { "bash": true, "edit": false },  // 用户强制工具开关（一般不用）
+  format: { type: "text" | "json_schema" },
+  summary: { title, body, diffs },  // 压缩后的摘要
+  agent: "build",
+  model: { providerID, modelID },
+  system: "...",  // 系统提示词
+  variant: "..."
+}
+```
+
+**助手消息 Assistant**：
+```typescript
+MessageV2.Assistant {
+  id, sessionID,
+  role: "assistant",
+  parentID: lastUser.id,  // 关联用户消息
+  time: { created, completed },
+  mode: "build",
+  agent: "build",
+  finish: "stop" | "tool-calls" | "error",
+  tokens: { input, output, reasoning, cache },
+  parts: [  // 消息片段
+    TextPart,           // 普通文本
+    ReasoningPart,      // AI 思考
+    ToolPart,           // 工具调用
+    ToolDeltaPart,      // 工具参数流式
+    StepStartPart,      // 步骤开始
+    StepFinishPart,     // 步骤完成
+    CompactionPart,     // 压缩标记
+    SnapshotPart,       // 文件快照
+    RetryPart,          // 重试记录
+  ]
+}
+```
+
+**Part 类型汇总**：
+
+| Part 类型 | 作用 | 关键字段 |
+|-----------|------|---------|
+| `TextPart` | 普通文本回复 | `text` |
+| `ReasoningPart` | AI 思考过程 | `text` |
+| `ToolPart` | 工具调用 | `tool`, `callID`, `state` |
+| `ToolDeltaPart` | 工具参数流式（GUI用） | 同 ToolPart，type 不同 |
+| `StepStartPart` | 循环步骤开始 | `snapshot` |
+| `StepFinishPart` | 循环步骤完成 | `reason`, `cost`, `tokens` |
+| `CompactionPart` | 压缩标记 | `auto`, `overflow` |
+| `SnapshotPart` | 文件快照 | `snapshot` |
+| `RetryPart` | 重试记录 | `attempt`, `error` |
+
 ---
 
-### 11.7 上下文压缩（Compaction）（✨新增）
+### 11.6.5 resolveTools 精讲（✨新增）
+
+**作用**：把 OpenCode 工具转换成 AI SDK 认识的格式
+
+**调用位置**：`session/prompt.ts:1511`
+
+**代码流程**：
+```typescript
+const resolveTools = Effect.fn("SessionPrompt.resolveTools")(function* (input) {
+  const tools: Record<string, AITool> = {}
+
+  // 1. 创建 context 函数（工具执行时的上下文）
+  const context = (args, options): Tool.Context => ({
+    sessionID: input.session.id,
+    callID: options.toolCallId,
+    agent: input.agent.name,
+    messages: input.messages,
+    ask: (req) => permission.ask(...),  // 权限请求
+    metadata: (val) => ...               // 更新 UI
+  })
+
+  // 2. 处理内置工具
+  for (const item of yield* registry.tools(model, agent)) {
+    const schema = ProviderTransform.schema(model, z.toJSONSchema(item.parameters))
+    tools[item.id] = tool({
+      id: item.id,
+      description: item.description,
+      inputSchema: jsonSchema(schema),
+      execute(args, options) {
+        const ctx = context(args, options)
+        yield* plugin.trigger("tool.execute.before")
+        const result = yield* item.execute(args, ctx)  // 调用原工具
+        yield* plugin.trigger("tool.execute.after")
+        return output
+      }
+    })
+  }
+
+  // 3. 处理 MCP 工具（外部工具）
+  for (const [key, item] of Object.entries(yield* mcp.tools())) {
+    // 类似上面，但增加 ctx.ask()
+  }
+
+  return tools
+})
+```
+
+**关键点**：
+- `tools` 参数只是历史遗留，实际没用到
+- Agent 参数传给 `tool.init({ agent })`，工具可以根据 agent 调整行为
+- 插件可以通过 `tool.definition` hook 修改工具定义
+
+**执行时机**：
+```
+用户发消息
+    │
+    ▼
+resolveTools() → 获取 { bash: tool, read: tool, ... }
+    │
+    ▼
+handle.process({ tools }) → 传给 AI SDK
+```
+
+---
+
+### 11.6.6 ToolRegistry.tools（✨新增）
+
+**作用**：获取所有已注册的工具
+
+**工具来源**：
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        工具来源                                              │
+│                                                                             │
+│  ┌──────────────────┐                                                       │
+│  │  1. 内置工具      │  bash, read, edit, glob, grep, task, todo, ...       │
+│  │  (hardcoded)     │  registry.ts:139-156                                  │
+│  └──────────────────┘                                                       │
+│                                                                             │
+│  ┌──────────────────┐                                                       │
+│  │  2. 自定义工具    │  {cwd}/tool/*.{js,ts} 目录下                           │
+│  │  (fromPlugin)    │  registry.ts:113-126                                  │
+│  └──────────────────┘                                                       │
+│                                                                             │
+│  ┌──────────────────┐                                                       │
+│  │  3. 插件工具      │  plugin.list() → p.tool                              │
+│  │  (from plugin)   │  registry.ts:128-133                                  │
+│  └──────────────────┘                                                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**tools() 方法流程**：
+```typescript
+const tools = Effect.fn("ToolRegistry.tools")(function* (model, agent) {
+  // 1. 获取所有工具
+  const allTools = yield* all(s.custom)
+
+  // 2. 根据 model 过滤
+  const filtered = allTools.filter((tool) => {
+    if (tool.id === "codesearch" || tool.id === "websearch") {
+      return model.providerID === ProviderID.opencode || Flag.OPENCODE_ENABLE_EXA
+    }
+    // edit/write 和 apply_patch 互斥
+    if (tool.id === "apply_patch") return usePatch
+    if (tool.id === "edit" || tool.id === "write") return !usePatch
+    return true
+  })
+
+  // 3. 初始化每个工具
+  return yield* Effect.forEach(filtered, (tool) => {
+    const next = yield* tool.init({ agent })  // 关键：传入 agent
+    yield* plugin.trigger("tool.definition", { toolID: tool.id, agent }, output)
+    return globalExtensionRegistry.transformToolDef(toolDef)
+  })
+})
+```
+
+**Agent 和 Tool 的关系**：
+- Agent 不直接包含工具列表
+- Agent 只包含**权限规则**（决定哪些操作需要询问/拒绝）
+- 工具统一从 registry 获取，agent 参数只是传入用来做**过滤/扩展**
+
+**关键代码**：
+- `tool/registry.ts:139-156` - 内置工具列表
+- `tool/registry.ts:191-238` - tools() 方法实现
+- `tool/registry.ts:441-479` - resolveTools 中调用
+
+---
+
+### 11.7 上下文压缩（Compaction）（✨整合）
 
 **问题**：对话历史越来越长，token 超过 LLM 限制怎么办？
 
-**解决方案**：自动压缩，把多条消息合成一条 summary
+**解决方案**：两种策略结合
+1. **compaction.create**：生成 summary，把多条消息合成一条
+2. **compaction.prune**：剪枝旧的 tool 输出，释放空间
+
+---
+
+#### 11.7.1 compaction.create（生成摘要）
 
 **触发条件**：
 - `isOverflow()` = 当前 token >= (限制 - 预留空间)
@@ -913,7 +1396,55 @@ evaluate() 匹配规则：
 [相关文件列表]
 ```
 
-**isOverflow() 实现**（`overflow.ts`）：
+---
+
+#### 11.7.2 compaction.prune（剪枝旧输出）
+
+**作用**：释放上下文空间，删除旧的 tool 输出但保留最近的关键结果
+
+**代码逻辑**（`compaction.ts:93-139`）：
+```typescript
+const prune = Effect.fn("SessionCompaction.prune")(function* (input) {
+  // 从最新消息往前遍历
+  for (msgIndex from msgs.length-1 to 0) {
+    turns++  // 遇到 user 消息就计数
+    if (turns < 2) continue  // 保留最近 2 轮对话的所有 tool 输出
+    
+    for (partIndex from msg.parts.length-1 to 0) {
+      if (part.type === "tool" && part.state.status === "completed") {
+        if (PRUNE_PROTECTED_TOOLS.includes(part.tool)) continue  // 某些工具不删除
+        if (part.state.time.compacted) break  // 已经压缩过的就停止
+        
+        total += estimate  // 累加 token
+        if (total > PRUNE_PROTECT) {
+          toPrune.push(part)  // 需要删除的
+        }
+      }
+    }
+  }
+  
+  // 标记为已压缩
+  for (const part of toPrune) {
+    part.state.time.compacted = Date.now()  // 标记时间戳
+    yield* session.updatePart(part)
+  }
+})
+```
+
+**关键常量**：
+- `PRUNE_PROTECT`: 保留最近多少 token 的 tool 输出
+- `PRUNE_PROTECTED_TOOLS`: 不压缩的工具（如 search、grep）
+- `PRUNE_MINIMUM`: 超过多少才压缩
+
+**调用位置**：`prompt.ts:1614`（后台异步执行）
+```typescript
+yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
+```
+
+---
+
+#### 11.7.3 isOverflow() 实现
+
 ```typescript
 const count = tokens.total  // 当前 token 数
 const reserved = 20000  // 预留空间
@@ -923,17 +1454,192 @@ return count >= usable  // 超限就触发
 
 **关键代码**：
 - `session/overflow.ts` - isOverflow 判断
+- `session/compaction.ts:93` - prune 函数
 - `session/compaction.ts:141` - processCompaction 函数
 - `session/compaction.ts:189-217` - Summary 模板
 - `session/compaction.ts:349` - compaction.create
 - `prompt.ts:1466` - 触发检查
+- `prompt.ts:1614` - prune 调用
 
 **面试怎么说**：
-> "我研究过 OpenCode 的上下文压缩机制。当对话历史超过 token 限制时，系统会自动触发压缩：找到用户消息作为锚点，创建一个空的 summary 消息，然后调用 LLM 生成压缩摘要。压缩后对话可以继续，之前的细节被丢弃但关键信息保留。"
+> "我研究过 OpenCode 的上下文压缩机制。当对话历史超过 token 限制时，系统会自动触发压缩：找到用户消息作为锚点，创建一个空的 summary 消息，然后调用 LLM 生成压缩摘要。同时通过 prune 剪枝旧的 tool 输出，只保留最近 2 轮对话和关键工具的结果。"
 
 ---
 
-### 11.8 面试一句话概括
+### 11.8 Plugin 系统（✨新增）
+
+**是什么**：扩展点机制，允许在特定时机插入自定义逻辑，不改源码
+
+**本质**：事件总线模式（不是 AOP）
+- AOP：切入点在注解/配置，框架自动拦截
+- Plugin：切入点硬编码在业务代码里，手动 trigger 触发
+- 一个切入点可以挂多个插件
+
+**核心概念**：
+
+| 概念 | 说明 | Java 类比 |
+|------|------|-----------|
+| Plugin | 返回 hooks 对象的函数 | 切面类 |
+| Hooks | `{ "扩展点名": fn }` 对象 | 切面方法 |
+| hooks 数组 | 存所有 Plugin 返回的 hooks | 切面列表 |
+| trigger | 遍历 hooks 数组，找对应 key 执行 | 代理调用 |
+
+**常用扩展点**：
+
+| 扩展点 | 时机 | input | output |
+|--------|------|-------|--------|
+| `tool.execute.before` | 工具执行前 | `{ tool, sessionID, callID, args }` | `{ args }` |
+| `tool.execute.after` | 工具执行后 | `{ tool, sessionID, callID, args }` | `{ output, title, metadata }` |
+| `tool.definition` | 工具定义时 | `{ toolID, agent }` | `{ description, parameters }` |
+| `experimental.chat.messages.transform` | 消息转换时 | `{}` | `{ messages }` |
+| `event` | Bus 事件 | `{ event }` | - |
+
+**完整链路**：
+
+```
+1. 插件定义：Plugin 函数返回 hooks 对象
+   ┌──────────────┐    返回     ┌─────────────────────────────────┐
+   │  Plugin1     │ ────────→  │ { "tool.execute.before": fn1 }  │ ──→ hooks[0]
+   │  (计时插件)   │            └─────────────────────────────────┘
+   └──────────────┘
+
+   ┌──────────────┐    返回     ┌──────────────────────────────────────┐
+   │  Plugin2     │ ────────→  │ { "tool.execute.before": fn2,        │ ──→ hooks[1]
+   │  (日志插件)   │            │   "tool.execute.after": fn3 }        │
+   └──────────────┘            └──────────────────────────────────────┘
+
+2. 插件注册：INTERNAL_PLUGINS 数组（plugin/index.ts:71-91）
+   const INTERNAL_PLUGINS = [Plugin1, Plugin2, HelloPlugin, ...]
+
+3. 插件初始化：启动时遍历，调用 plugin(input)，返回 hooks 存入数组（plugin/index.ts:170-182）
+   for (const plugin of INTERNAL_PLUGINS) {
+     hooks.push(await plugin(input))
+   }
+
+4. 触发扩展点：业务代码手动调用（prompt.ts:454, 469）
+   plugin.trigger("tool.execute.before", input, output)
+     ↓
+   遍历 hooks 数组：
+     hooks[0]["tool.execute.before"] → fn1 ✅ 执行
+     hooks[1]["tool.execute.before"] → fn2 ✅ 执行
+     hooks[2]["tool.execute.before"] → undefined ❌ 跳过
+     ↓
+   返回 output（可能被插件修改）
+```
+
+**实际插件示例**（HelloPlugin）：
+```typescript
+// custom-hw/plugin/hello-plugin-cac.ts
+import type { Plugin } from "@opencode-ai/plugin"
+
+export const HelloPlugin: Plugin = async ({ client }) => {
+  const log = (message: string, data?: any) => {
+    client.app.log({
+      body: { service: "hello-plugin", level: "info", message, ...data },
+    })
+  }
+
+  return {
+    "tool.execute.before": async (input, output) => {
+      log(`[Hello] 工具即将执行: ${input.tool}`)
+    },
+    "tool.execute.after": async (input, output) => {
+      log(`[Hello] 工具执行完成: ${input.tool}`)
+    },
+  }
+}
+```
+
+**注册方式**：
+1. import: `import { HelloPlugin } from "../custom-hw/plugin/hello-plugin-cac"`
+2. 加入 INTERNAL_PLUGINS 数组: `[..., HelloPlugin]`
+
+**关键代码**：
+- `plugin/index.ts:71-91` - INTERNAL_PLUGINS 插件列表
+- `plugin/index.ts:170-182` - 插件初始化（调用 plugin(input)）
+- `plugin/index.ts:280-293` - trigger 实现（遍历 hooks 执行）
+- `session/prompt.ts:454` - tool.execute.before 触发
+- `session/prompt.ts:469` - tool.execute.after 触发
+- `tool/registry.ts:222` - tool.definition 触发
+- `session/prompt.ts:1550` - messages.transform 触发
+- `custom-hw/plugin/hello-plugin-cac.ts` - 自己写的插件示例
+
+---
+
+### 11.8.1 Provider 模块精讲（✨新增）
+
+**一句话概括**：
+> Provider 模块就是 Agent 和 LLM 之间的"数据源选择器"，负责：从哪找模型、怎么连模型、怎么适配模型。
+
+**三层核心逻辑**：
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    1. 从哪找模型（初始化 6 步）                               │
+│                                                                             │
+│   ModelsDev 数据库 → config 合并 → env 检测 → auth 读取                    │
+│       → custom() 后处理 → filter 过滤                                       │
+│                                                                             │
+│   优先级：database → config → env → auth → custom → filter                 │
+│   类比：Spring PropertySource 优先级链                                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                        │
+                                        ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    2. 怎么连模型（resolveSDK）                                │
+│                                                                             │
+│   合并 options → URL ${VAR} 替换 → Hash 缓存 key                           │
+│       → 包装自定义 fetch（超时、SSE 检测）                                   │
+│       → BUNDLED_PROVIDERS 内置优先？或动态 npm install + import             │
+│                                                                             │
+│   getLanguage() 调用链：                                                     │
+│   Model → resolveSDK → SDK 客户端                                           │
+│       → modelLoaders[providerID] 自定义 getModel？                          │
+│       → 否则 sdk.languageModel(model.api.id)                                │
+│       → 缓存到 Map<string, LanguageModelV3>                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                        │
+                                        ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    3. 怎么适配模型（ProviderTransform）                       │
+│                                                                             │
+│   normalizeMessages()  → 消息格式适配（空content、toolCallId等）            │
+│   applyCaching()       → 缓存标记（Anthropic/OpenRouter/Bedrock 各不同）    │
+│   unsupportedParts()   → 不支持的附件类型转文本                             │
+│   variants()           → 思考级别（每个 Provider 参数格式不同）              │
+│   temperature()        → 不同模型默认温度                                   │
+│   options()            → Provider 特殊选项                                  │
+│   schema()             → Gemini 不接受 integer 枚举                         │
+│   providerOptions()    → 选项映射到正确的 SDK 命名空间                      │
+│                                                                             │
+│   类比：DatabaseDialect，不同数据库的 SQL 方言翻译层                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**custom() 后处理器典型例子**：
+
+| Provider | 定制行为 | 类比 |
+|----------|---------|------|
+| anthropic | 添加 `anthropic-beta` 请求头 | MySQL 的 charset 配置 |
+| openai | 用 `sdk.responses()` 而非 `sdk.languageModel()` | PostgreSQL 的 SSL 模式选择 |
+| amazon-bedrock | 根据 region 自动加前缀，AWS 凭证链 | Oracle 的 TNS 配置 |
+| gitlab | 运行时动态发现工作流模型 | 动态数据源路由 |
+| azure | 根据配置选 responses 或 chat API | SQL Server 的连接方式选择 |
+
+**面试怎么说**：
+> "我深入研究了 OpenCode 的 Provider 模块。它用 6 步初始化链加载模型数据库，优先级是 database → config → env → auth → custom → filter。每个 Provider 有自己的后处理器（custom 函数），类似 BeanPostProcessor。连接模型时用 resolveSDK 创建 SDK 客户端，内置 20+ SDK 优先，动态 npm install 兜底。最有趣的是 ProviderTransform，它是个消息适配层，类似数据库的 Dialect，处理不同 LLM 的'怪癖'——比如 Anthropic 不接受空 content、Claude 的 toolCallId 只能含字母数字、Mistral 的 toolId 限 9 个字符。"
+
+**关键代码**：
+- `provider/provider.ts:1014-1339` - 初始化 6 步
+- `provider/provider.ts:175-820` - custom() 后处理器
+- `provider/provider.ts:1344-1479` - resolveSDK
+- `provider/provider.ts:1503-1544` - getLanguage
+- `provider/transform.ts` - 全部消息适配逻辑
+- `provider/schema.ts` - Brand Type 定义
+
+---
+
+### 11.9 面试一句话概括
 
 ```
 我深入理解了 AI Agent 的核心实现：
@@ -974,6 +1680,11 @@ return count >= usable  // 超限就触发
 | 工具注册中心 | Spring Bean 容器 | 统一管理、依赖注入 | 工具需要自然语言描述供 LLM 理解 |
 | 插件扩展点 | AOP 切面 / Filter 链 | 拦截增强 | 插件注册而非硬编码 |
 | 工具包装层 | 装饰器模式 | 层层包装 | 不改原工具，增加功能 |
+| Provider 初始化 | PropertySource 优先级链 | 多源合并 | 6步链式加载，后者覆盖前者 |
+| custom() 后处理 | BeanPostProcessor | 初始化后定制 | 每个 Provider 有自己的定制逻辑 |
+| resolveSDK | DataSource.getConnection() | 客户端创建 | Hash 缓存 + 动态 npm install |
+| ProviderTransform | DatabaseDialect | 方言适配 | 不同 LLM 的消息格式翻译 |
+| ProviderID/ModelID Brand Type | 自定义强类型字符串 | 编译时类型安全 | Effect Schema Brand 实现 |
 
 *我的补充与理解：*
 
